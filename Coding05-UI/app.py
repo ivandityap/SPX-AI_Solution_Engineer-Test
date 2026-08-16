@@ -12,6 +12,8 @@ from google import genai
 from google.genai import types
 import os
 from dotenv import load_dotenv
+import sqlite3
+from sqlalchemy import text
 
 st.set_page_config(page_title="Receipt Assistant", page_icon="🧾")
 
@@ -28,20 +30,22 @@ MAX_IMAGE_SIZE = 2000  # pixels
 
 ocr_extract_system_prompt = """
 Your main task is to extract key information from an OCR result. The processed content is mainly a receipt. You must extract these information:
-1. Receipt Date (Use DD-MM-YYYY Format)
+1. Receipt Date (Use YYYY-MM-DD Format)
 2. Item Name
-3. Price
+3. Store Name/Location Name
+4. Price
 
 After you retrieve those information, I want you to create a structured format to inject the information to an SQLlite table with column:
 1. date
 2. item
-3. price
+3. store
+4. price
 
 Use this structure as a guide:
 
 
 ONLY ANSWER WITH A STRUCTURE LIKE THIS:
-(Receipt Date, Item Name, Price)
+Receipt Date, Item Name, Store/Location Name, Price
 """
 model = "gemini-3.5-flash-lite"
 
@@ -49,8 +53,14 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-
-
+conn = st.connection('receipt_agent', type='sql')
+def data_store(extracted_keys):
+    with conn.session as s:
+        s.execute(
+            text('INSERT INTO purchase (date, item, store, price) VALUES (:date, :item, :store, :price);'),
+            {"date": extracted_keys[0], "item": extracted_keys[1], "store": extracted_keys[2], "price": extracted_keys[3]}
+        )
+        s.commit()
 
 def ocr_reasoner(extracted_text):
     response = client.models.generate_content(
@@ -58,8 +68,9 @@ def ocr_reasoner(extracted_text):
         contents=extracted_text,
         config=types.GenerateContentConfig(system_instruction=ocr_extract_system_prompt),
         )
-    print(response.text)
-    st.success(response.text)
+    cleansed_response = response.text.split(", ")
+    return cleansed_response
+
 
 def ocr_image(receipt):
     st.success("Form submitted successfully!")
@@ -91,7 +102,8 @@ def configure_sidebar() -> None:
                 "Submit", type="primary", use_container_width=True)
             if submitted and my_upload is not None:
                 extracted_text = ocr_image(my_upload)
-                ocr_reasoner(extracted_text)
+                extracted_keys = ocr_reasoner(extracted_text)
+                data_store(extracted_keys)
             elif submitted:
                 st.warning("Please upload an image before submitting.")
             
