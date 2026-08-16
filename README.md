@@ -58,18 +58,3 @@ cd vector-db
 docker compose up -d
 ```
 Then open and run the notebook — it embeds a sample document set, inserts into Milvus, and validates a hand-written cosine similarity function against Milvus's native search results.
-
-## Known Limitations
-- The agent currently supports single-turn tool calls per question (item name, price, store, or date lookups). Multi-step reasoning across a full conversation history is not yet implemented.
-- Date-range queries (e.g. "last 7 days") rely on the model resolving relative dates via the current date injected into the system prompt, rather than a dedicated range-query function.
-- OCR accuracy depends on receipt image quality; best results with clear, well-lit, minimally skewed photos.
-
-## Test Requirements Checklist
-- [x] Knowledge questions (`ANSWERS.md`)
-- [x] Small CSV parsing + insight
-- [x] Large CSV parsing, low memory
-- [x] Explanation of the two approaches
-- [x] Self-deployed vector DB + manual cosine similarity
-- [x] Full platform: upload → OCR → insight → DB → AI agent Q&A
-- [x] Dockerized
-- [x] CI/CD (GitHub Actions)
