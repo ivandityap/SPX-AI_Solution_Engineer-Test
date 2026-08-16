@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import datetime
 import textwrap
 import time
+import re
 import pytesseract
 from PIL import Image
 from google import genai
@@ -50,10 +51,22 @@ ONLY ANSWER WITH A STRUCTURE LIKE THIS:
 Receipt Date, Item Name, Store/Location Name, Price
 """)
 
-main_agent_system_prompt = textwrap.dedent("""
+def build_main_agent_system_prompt() -> str:
+    today = datetime.date.today()
+    return textwrap.dedent(f"""
     You are an AI assistant focused on answering user question about purchase history.
+    Today's date is {today.isoformat()} ({today.strftime('%A, %B %d, %Y')}). Use this to resolve any
+    relative date reference (e.g. "yesterday", "last 7 days", "this month") into an absolute
+    YYYY-MM-DD date or range before calling get_date.
     DO NOT use your own memory to answer. If the provided context is not sufficent, asks for follow ups.
     You MUST only answer with a the factual data only without much explanations.
+    You have access to functions that query the user's real purchase database.
+    Before asking any follow-up question, you MUST first attempt to call the relevant function to retrieve real data.
+    Only ask a follow-up if the function's result genuinely doesn't answer the question — never ask for clarification on a term the user already stated clearly (like an item name).
+    NEVER state a date, item, store, or price that did not come from a function result. If a function
+    call returns an empty list, say plainly that no matching purchase was found — do not guess or make
+    one up. If the user's question implies a filter (e.g. a category like "food") that has no matching
+    column, say you can only search by item, price, store, or date, instead of inventing a match.
     You can answer users questions like these:
         --------------------------------------------
         Q:'What food did i buy yesterday?'
@@ -76,20 +89,30 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 conn = st.connection('receipt_agent', type='sql')
 def data_store(extracted_keys):
+    if len(extracted_keys) != 4:
+        st.error(f"Could not parse receipt into 4 fields (got {len(extracted_keys)}: {extracted_keys}). Not saved.")
+        return
+    date, item, store, raw_price = extracted_keys
+    clean_price = re.sub(r"[^\d]", "", raw_price)
+    if not clean_price:
+        st.error(f"Could not parse a numeric price from '{raw_price}'. Not saved.")
+        return
     with conn.session as s:
         s.execute(
             text('INSERT INTO purchase (date, item, store, price) VALUES (:date, :item, :store, :price);'),
-            {"date": extracted_keys[0], "item": extracted_keys[1], "store": extracted_keys[2], "price": extracted_keys[3]}
+            {"date": date, "item": item, "store": store, "price": int(clean_price)}
         )
         s.commit()
+
+    st.cache_data.clear()
 
 def ocr_reasoner(extracted_text):
     response = client.models.generate_content(
         model=model,
         contents=extracted_text,
-        config=types.GenerateContentConfig(system_instruction=ocr_extract_system_prompt),
+        config=types.GenerateContentConfig(system_instruction=ocr_extract_system_prompt, temperature=0),
         )
-    cleansed_response = response.text.split(", ")
+    cleansed_response = response.text.strip().split(", ")
     return cleansed_response
 
 
@@ -139,10 +162,59 @@ def get_response(prompt):
     response_stream =  client.models.generate_content_stream(
          model=model,
          contents=prompt,
+         config=types.GenerateContentConfig(
+             system_instruction=build_main_agent_system_prompt(),
+             tools=[get_item, get_price, get_date, get_store],
+             temperature=0,
+         )
          )
     for chunk in response_stream:
         if chunk.text:
             yield chunk.text
+
+def get_item(search_term: str):
+    """Look up purchases matching an item name.
+
+    Args:
+        search_term: The item name or partial keyword to search for (e.g. "hamburger").
+    """
+    print(f"[TOOL CALLED] get_item with search_term={search_term}")
+    query = "SELECT * FROM purchase WHERE item LIKE :term;"
+    df = conn.query(query, params={"term": f"%{search_term}%"}, ttl=0)
+    return df.to_dict(orient="records")
+
+def get_price(search_term: str):
+    """Look up purchases matching an item price.
+
+    Args:
+        search_term: The item price or partial keyword to search for (e.g. "20000").
+    """
+    print(f"[TOOL CALLED] get_item with search_term={search_term}")
+    query = "SELECT * FROM purchase WHERE price LIKE :term;"
+    df = conn.query(query, params={"term": f"%{search_term}%"}, ttl=0)
+    return df.to_dict(orient="records")
+
+def get_store(search_term: str):
+    """Look up purchases matching an item store/shop.
+
+    Args:
+        search_term: The item store/shop or partial keyword to search for (e.g. "kopi kenangan").
+    """
+    print(f"[TOOL CALLED] get_item with search_term={search_term}")
+    query = "SELECT * FROM purchase WHERE store LIKE :term;"
+    df = conn.query(query, params={"term": f"%{search_term}%"}, ttl=0)
+    return df.to_dict(orient="records")
+
+def get_date(search_term: str):
+    """Look up purchases matching an item bought date.
+
+    Args:
+        search_term: The item date or partial keyword to search for (e.g. "YYYY-MM-DD").
+    """
+    print(f"[TOOL CALLED] get_item with search_term={search_term}")
+    query = "SELECT * FROM purchase WHERE date LIKE :term;"
+    df = conn.query(query, params={"term": f"%{search_term}%"}, ttl=0)
+    return df.to_dict(orient="records")
 
 def build_question_prompt(question):
     """Fetches info from different services and creates the prompt string."""
@@ -154,12 +226,10 @@ def build_question_prompt(question):
     else:
         recent_history_str = None
 
-    # Fetch information from different services in parallel.
     task_infos = []
 
 
     return build_prompt(
-        instructions=main_agent_system_prompt,
         recent_messages=recent_history_str,
         question=question,
     )
@@ -276,14 +346,9 @@ def main_page() -> None:
                  with st.spinner("Researching..."):
                     full_prompt = build_question_prompt(user_message)
 
-            with st.spinner("Thinking..."):
-                        response_gen = get_response(full_prompt)
-
             with st.container():
-                        # Stream the LLM response.
                         response = st.write_stream(get_response(full_prompt))
             
-                        # Add messages to chat history.
                         st.session_state.messages.append({"role": "user", "content": user_message})
                         st.session_state.messages.append({"role": "assistant", "content": response})
             
