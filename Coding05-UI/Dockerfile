@@ -14,4 +14,4 @@ COPY . .
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "app.py"]
+CMD ["sh", "-c", "python db_setup.py && streamlit run app.py"]

@@ -1,3 +1,2 @@
-"*.csv" 
-"*.csv" 
-"*.csv" 
+*.csv
+*.env
