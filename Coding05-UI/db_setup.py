@@ -1,7 +1,7 @@
 import sqlite3
 
 # Connects to the database file (creates it if it does not exist)
-with sqlite3.connect("receipt_agent") as connection:
+with sqlite3.connect("receipt_agent.db") as connection:
     cursor = connection.cursor()
     
     # Create a table
